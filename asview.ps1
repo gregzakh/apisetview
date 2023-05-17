@@ -1,4 +1,5 @@
 using namespace System.IO
+using namespace System.Runtime.InteropServices
 
 $GetPeExports = {
   param([String]$Path)
@@ -105,4 +106,41 @@ $GetPeExports = {
   }
 }
 
+$GetMmPeExports = {
+  param([String]$Module)
+  end {
+    $uint_sz, $ushort_sz = ([UInt32]0, [UInt16]0).ForEach{[Marshal]::SizeOf($_)}
+    ($exp = $ExecutionContext.SessionState.PSVariable.Get("__$Module").Value) ? $exp : $(
+      $mod = ($ps = Get-Process -Id $PID).Modules.Where{$_.ModuleName -match "^$Module"}.BaseAddress
+      $ps.Dispose() && $($jmp = ($mov = [Marshal]::ReadInt32($mod, 0x3C)) + $uint_sz)
+      $jmp = switch ([BitConverter]::ToUInt16([BitConverter]::GetBytes([Marshal]::ReadInt16($mod, $jmp)), 0)) {
+        0x014C { 0x20, 0x78, 0x7C } 0x8664 { 0x40, 0x88, 0x8C } default{ [SystemException]::new() }
+      }
+      $tmp, $fun = $mod."ToInt$($jmp[0])"(), @{}
+      $va, $sz = $jmp[1, 2].ForEach{[Marshal]::ReadInt32($mod, $mov + $_)}
+      ($ed = @{bs = 0x10; nf = 0x14; nn = 0x18; af = 0x1C; an = 0x20; ao = 0x24}).Keys.ForEach{
+        $val = [Marshal]::ReadInt32($mod, $va + $ed.$_)
+        Set-Variable -Name $_ -Value ($_.StartsWith('a') ? $tmp + $val : $val) -Scope Script
+      }
+      function Assert-Forwarder([UInt32]$fa) { end { ($va -le $fa) -and ($fa -lt ($va + $sz)) } }
+      (0..($nf - 1)).ForEach{
+        $fun[$bs + $_] = (Assert-Forwarder ($fa = [Marshal]::ReadInt32([IntPtr]($af + $_ * $uint_sz)))) ? @{
+          Address = ''; Forward = [Marshal]::PtrToStringAnsi([IntPtr]($tmp + $fa))
+        } : @{ Address = [IntPtr]($tmp + $fa); Forward = '' }
+      }
+      Set-Variable -Name "__$Module" -Value ($exp = (0..($nn - 1)).ForEach{
+        [PSCustomObject]@{
+          Ordinal = ($ord = $bs + [Marshal]::ReadInt16([IntPtr]($ao + $_ * $ushort_sz)))
+          Address = $fun[$ord].Address
+          Name = [Marshal]::PtrToStringAnsi([IntPtr]($tmp + [Marshal]::ReadInt32([IntPtr]($an + $_ * $uint_sz))))
+          Forward = $fun[$ord].Forward
+        }
+      }) -Option ReadOnly -Scope Global -Visibility Private
+      $exp
+    )
+  }
+}
+
+
+#& $GetMmPeExports ntdll
 #& $GetPeExports "$([Environment]::SystemDirectory)\downlevel\api-ms-win-core-processthreads-l1-1-2.dll"
