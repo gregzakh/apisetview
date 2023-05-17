@@ -174,8 +174,32 @@ $NativeCall = {
   }
 }
 
+$GetApiSet = {
+  end {
+    $peb, $to_i = $ntdll.RtlGetCurrentPeb.Invoke(), "ToInt$(($sz = [IntPtr]::Size) * 0x08)"
+    $ptr = [Marshal]::ReadIntPtr([IntPtr]($peb.$to_i() + ($sz -eq 8 ? 0x68 : 0x38))).$to_i()
+    $count, $offset = (0x0C, 0x10).ForEach{ [Marshal]::ReadInt32([IntPtr]$ptr, $_) }
+    $pasne = [IntPtr]($ptr + $offset) # *API_SET_NAMESPACE_ENTRY
+    for ($i = 0; $i -lt $count; $i++) {
+      $fl, $no, $nl, $vo, $vc = (0x00, 0x04, 0x08, 0x10, 0x14).ForEach{ [Marshal]::ReadInt32($pasne, $_) }
+      $dll = "$([Marshal]::PtrToStringUni([IntPtr]($ptr + $no), $nl / 2)).dll"
+      $pasve = [IntPtr]($ptr + $vo) # *API_SET_VALUE_ENTRY
+      [PSCustomObject]@{
+        Module = $dll
+        Sealed = [Boolean]$fl
+        Linked = for ($j = 0; $j -lt $vc; $j++) {
+          $vvo, $vvl = (0x0C, 0x10).ForEach{ [Marshal]::ReadInt32($pasve, $_) }
+          [Marshal]::PtrToStringUni([IntPtr]($ptr + $vvo), $vvl / 2)
+          $pasve = [IntPtr]($pasve.$to_i() + 0x14)
+        }
+      }
+      $pasne = [IntPtr]($pasne.$to_i() + 0x18)
+    }
+  }
+}
+
 #$NativeCall.Invoke('ntdll', {intptr RtlGetCurrentPeb})
-#$ntdll.RtlGetCurrentPeb.Invoke()
+#& $GetApiSet
 
 #& $GetMmPeExports ntdll
 #& $GetPeExports "$([Environment]::SystemDirectory)\downlevel\api-ms-win-core-processthreads-l1-1-2.dll"
