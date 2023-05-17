@@ -198,6 +198,14 @@ $GetApiSet = {
   }
 }
 
+$GetApiSetEx = {
+  end {
+    $rk = Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\ApiSetSchemaExtensions'
+    $rk.GetSubKeyNames().ForEach{ ($sub = $rk.OpenSubKey($_)).GetValue('FileName') && $sub.Dispose() }
+    $rk.Dispose()
+  }
+}
+
 #$NativeCall.Invoke('ntdll', {intptr RtlGetCurrentPeb})
 #& $GetApiSet
 
