@@ -1,4 +1,7 @@
 using namespace System.IO
+using namespace System.Reflection
+using namespace System.Linq.Expressions
+using namespace System.Collections.Specialized
 using namespace System.Runtime.InteropServices
 
 $GetPeExports = {
@@ -141,6 +144,38 @@ $GetMmPeExports = {
   }
 }
 
+$NativeCall = {
+  param([String]$Module, [ScriptBlock]$Signature)
+  end {
+    $funcs, $exports = @{}, $GetMmPeExports.Invoke($Module)
+    for ($i, $m, $fn, $p = 0, ([Expression].Assembly.GetType(
+      'System.Linq.Expressions.Compiler.DelegateHelpers'
+    ).GetMethod('MakeNewCustomDelegate', [BindingFlags]'NonPublic, Static')
+    ), [Marshal].GetMethod('GetDelegateForFunctionPointer', ([IntPtr])),
+    $Signature.Ast.FindAll({$args[0].CommandElements}, $true).ToArray();
+    $i -lt $p.Length; $i++) {
+      $fnret, $fname = ($def = $p[$i].CommandElements).Value
+      $fnsig, $fnarg = $exports.Where{$_.Name -ceq $fname}.Address, $def.Pipeline.Extent.Text
+      if (!$fnsig) { throw [InvalidOperationException]::new("Cannot find $fname signature.") }
+
+      [Object[]]$fnarg = [String]::IsNullOrEmpty($fnarg) ? $fnret : (
+        ($fnarg -replace '\[|\]' -split ',\s+').ForEach{
+          $_.StartsWith('_') ? (Get-Variable $_.Remove(0, 1) -ValueOnly) : $_
+        } + $fnret
+      )
+      $funcs[
+        $fname.EndsWith('W') ? $fname.Substring(0, $fname.Length - 1) : $fname
+      ] = $fn.MakeGenericMethod(
+        [Delegate]::CreateDelegate([Func[[Type[]], Type]], $m).Invoke($fnarg)
+      ).Invoke([Marshal], $fnsig)
+    }
+
+    Set-Variable -Name $Module -Value $funcs -Scope Global -Option ReadOnly -Force
+  }
+}
+
+#$NativeCall.Invoke('ntdll', {intptr RtlGetCurrentPeb})
+#$ntdll.RtlGetCurrentPeb.Invoke()
 
 #& $GetMmPeExports ntdll
 #& $GetPeExports "$([Environment]::SystemDirectory)\downlevel\api-ms-win-core-processthreads-l1-1-2.dll"
