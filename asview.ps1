@@ -1,8 +1,12 @@
 using namespace System.IO
+using namespace System.Drawing
 using namespace System.Reflection
+using namespace System.Windows.Forms
 using namespace System.Linq.Expressions
 using namespace System.Collections.Specialized
 using namespace System.Runtime.InteropServices
+
+Add-Type -AssemblyName System.Windows.Forms
 
 $GetPeExports = {
   param([String]$Path)
@@ -94,12 +98,9 @@ $GetPeExports = {
         $ords = $fs.Position
         $fs.Position = $cursor
 
-        [PSCustomObject]@{
-          Ordinal = $ord
-          Address = $funcs.$ord.Address
-          Name = & $GetRawString (& $ConvertRvaToRaw ($br.ReadUInt32())) -NoMove
-          ForwardedTo = $funcs.$ord.Forward
-        }
+        ($item = $lvList2.Items.Add($ord)).SubItems.Add($funcs.$ord.Address)
+        $item.SubItems.Add((& $GetRawString (& $ConvertRvaToRaw ($br.ReadInt32())) -NoMove))
+        $item.SubItems.Add($funcs.$ord.Forward)
       }
     }
     catch { Write-Warning $_ }
@@ -184,30 +185,109 @@ $GetApiSet = {
       $fl, $no, $nl, $vo, $vc = (0x00, 0x04, 0x08, 0x10, 0x14).ForEach{ [Marshal]::ReadInt32($pasne, $_) }
       $dll = "$([Marshal]::PtrToStringUni([IntPtr]($ptr + $no), $nl / 2)).dll"
       $pasve = [IntPtr]($ptr + $vo) # *API_SET_VALUE_ENTRY
-      [PSCustomObject]@{
-        Module = $dll
-        Sealed = [Boolean]$fl
-        Linked = for ($j = 0; $j -lt $vc; $j++) {
-          $vvo, $vvl = (0x0C, 0x10).ForEach{ [Marshal]::ReadInt32($pasve, $_) }
-          [Marshal]::PtrToStringUni([IntPtr]($ptr + $vvo), $vvl / 2)
-          $pasve = [IntPtr]($pasve.$to_i() + 0x14)
-        }
-      }
+
+      ($item = $lvList1.Items.Add($dll)).SubItems.Add([String][Boolean]$fl)
+      $item.SubItems.Add($(for ($j = 0; $j -lt $vc; $j++) {
+        $vvo, $vvl = (0x0C, 0x10).ForEach{ [Marshal]::ReadInt32($pasve, $_) }
+        [Marshal]::PtrToStringUni([IntPtr]($ptr + $vvo), $vvl / 2)
+        $pasve = [IntPtr]($pasve.$to_i() + 0x14)
+      }) -join ', ')
+
+      $item.ForeColor = [Color]( # existed sets highlights with blue color
+        (Test-Path "$([Environment]::SystemDirectory)\downlevel\$dll") ? 'DarkBlue' : 'Crimson'
+      )
       $pasne = [IntPtr]($pasne.$to_i() + 0x18)
     }
   }
 }
 
-$GetApiSetEx = {
+<#$GetApiSetEx = {
   end {
     $rk = Get-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\ApiSetSchemaExtensions'
     $rk.GetSubKeyNames().ForEach{ ($sub = $rk.OpenSubKey($_)).GetValue('FileName') && $sub.Dispose() }
     $rk.Dispose()
   }
+}#>
+
+$ConstructFormAndElements = {
+  param([Array]$Names, [Type[]]$Elements, [Hashtable]$Property)
+  end {
+    if ($Names.Length -ne $Elements.Length) { throw [InvalidOperationException]::new('Element mismatch.') }
+    for ($i = 0; $i -lt $Names.Length; $i++) {
+      if (($x = $Names[$i]) -is [Array]) {
+        (1..$x.Length).ForEach{
+          Set-Variable -Name "$($x[0])$_" -Value (
+            New-Object $Elements[$i] -Property $Property[$Elements[$i].Name]
+          ) -Scope Script -Force
+        }
+      }
+      else {
+        Set-Variable -Name $x -Value (
+          New-Object $Elements[$i] -Property $Property[$Elements[$i].Name]
+        ) -Scope Script -Force
+      }
+    }
+  }
 }
 
-#$NativeCall.Invoke('ntdll', {intptr RtlGetCurrentPeb})
-#& $GetApiSet
+& $ConstructFormAndElements -Names (
+  'frmMain', 'scSplit', (,'lvList' * 2), (,'chCol_' * 7), 'sbStrip', 'sbLabel'
+) -Elements (
+  [Form], [SplitContainer], [ListView], [ColumnHeader], [StatusStrip], [ToolStripMenuItem]
+) -Property @{
+  Form = @{
+    ClientSize = [Size]::new(800, 600)
+    StartPosition = [FormStartPosition]::CenterScreen
+    Text = 'ApiSet View'
+  }
+  SplitContainer = @{
+    Dock = [DockStyle]::Fill
+    Orientation = [Orientation]::Horizontal
+    SplitterDistance = 58
+    SplitterWidth = 1
+  }
+  ListView = @{
+    Dock = [DockStyle]::Fill
+    FullRowSelect = $true
+    Multiselect = $false
+    ShowItemToolTips = $false
+    View = [View]::Details
+  }
+}
+# scSplit
+$scSplit.Panel1.Controls.Add($lvList1)
+$scSplit.Panel2.Controls.Add($lvList2)
+# lists
+$lvList1.Columns.AddRange(($chCol_1, $chCol_2, $chCol_3))
+$lvList2.Columns.AddRange(($chCol_4, $chCol_5, $chCol_6, $chCol_7))
+$chCol_1.Text = $chCol_6.Text = 'Name'
+$chCol_2.Text = 'Sealed'
+$chCol_3.Text = 'Linked'
+$chCol_4.Text = 'Ordinal'
+$chCol_5.Text = 'Address'
+$chCol_7.Text = 'Forward'
+$lvList1.Add_SelectedIndexChanged({
+  $lvList2.Items.Clear()
+  $lvList1.SelectedItems.ForEach{
+    $sbLabel.Text = $_.ForeColor -eq [Color]::DarkBlue ? "$(
+      [Environment]::SystemDirectory
+    )\downlevel\$($_.SubItems[0].Text)" : 'Not Found'
+  }
 
-#& $GetMmPeExports ntdll
-#& $GetPeExports "$([Environment]::SystemDirectory)\downlevel\api-ms-win-core-processthreads-l1-1-2.dll"
+  if ($sbLabel.Text -ne 'Not Found') {
+    & $GetPeExports $sbLabel.Text
+    $lvList2.AutoResizeColumns([ColumnHeaderAutoResizeStyle]::ColumnContent)
+  }
+})
+# sbStrip
+$sbStrip.Items.AddRange(($sbLabel))
+$sbLabel.AutoSize = $true
+# frmMain
+$frmMain.Controls.AddRange(($scSplit, $sbStrip))
+$frmMain.Add_Load({
+  $NativeCall.Invoke('ntdll', {IntPtr RtlGetCurrentPeb})
+  $GetApiSet.Invoke()
+  $lvList1.AutoResizeColumns([ColumnHeaderAutoResizeStyle]::ColumnContent)
+  $sbLabel.Text = 'Ready'
+})
+[void]$frmMain.ShowDialog()
